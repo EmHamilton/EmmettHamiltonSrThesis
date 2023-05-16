@@ -1,0 +1,111 @@
+import meshtools
+import plot
+import optimize
+import symmetry
+
+import povray
+
+var a = 0.5 // Layer spacing 
+var r = 0.5 // Size of hole 
+var L = 2  // Size of box 
+
+// Construct upper octant
+var vertices = [ [r,0,a], [L,0,a], [L,r,a], [L,L,a], [r,L,a], [0,L,a], [0,r,a], [r,r,a],
+                 [r,0,0], [r,r,0], [0,r,0] ]
+
+var faces = [  [0,1,2,7], [2,3,4,7], [7,4,5,6], [0,8,9,7], [6,7,9,10] ]
+
+// Create the rest of the mesh by reflection
+fn reflect(mesh, axis) {
+  var rmat = Matrix([[1,0,0],[0,1,0],[0,0,1]])
+  if (isint(axis)) rmat[axis,axis]*=-1
+  if (islist(axis)) for (i in axis) rmat[i,i]*=-1
+
+  var m = mesh.clone()
+  var vert = m.vertexmatrix()
+
+  for (vid in 0...m.count()) {
+    vert.setcolumn(vid, rmat * vert.column(vid))
+  }
+
+  return m
+}
+
+var m1 = PolyhedronMesh(vertices, faces)
+
+// Merge reflected meshed together
+var merge = MeshMerge([ m1,
+                        reflect(m1, 0),
+                        reflect(m1, 1),
+                        reflect(m1, 2),
+                        reflect(m1, [0,1]),
+                        reflect(m1, [1,2]),
+                        reflect(m1, [2,0]),
+                        reflect(m1, [0,1,2])
+                      ])
+
+
+var m = merge.merge()
+m.addgrade(1)
+
+m=refinemesh(m)
+equiangulate(m)
+
+Show(plotmesh(m, grade=[0,1,2]))
+
+var problem = OptimizationProblem(m) 
+
+var la = Area() 
+problem.addenergy(la)
+
+var lmsq = MeanCurvatureSq() 
+problem.addenergy(lmsq, prefactor=2)
+
+var leq = EquiElement() 
+problem.addenergy(leq, prefactor=0.1)
+
+var bnd = Selection(m, boundary=true)
+Show(plotselection(m, bnd, grade=[0,1,2]))
+
+var opt = ShapeOptimizer(problem, m) 
+opt.fix(bnd)
+
+opt.stepsize = 0.01 
+
+for (i in 1..20) {
+    opt.conjugategradient(10) 
+    equiangulate(m)
+    if (opt.hasconverged()) break 
+}
+
+var mr=MeshRefiner([m, bnd])
+var refmap = mr.refine()
+for (el in [problem, opt]) el.update(refmap)
+m = refmap[m]
+
+// Reset the edge constraint 
+opt.fixed=[]
+bnd = Selection(m, boundary=true)
+opt.fix(bnd)
+
+for (i in 1..200) {
+    opt.conjugategradient(10) 
+    equiangulate(m)
+    if (opt.hasconverged()) break 
+}
+
+print m 
+
+var gdisp = plotmesh(m, grade=[0,1,2])
+Show(gdisp)
+
+/*
+gdisp.background = White
+var pov = POVRaytracer(gdisp)
+pov.viewpoint = 10*Matrix([1,1,0.2])
+pov.viewangle = 30
+pov.vertical = Matrix([0,0,1])
+pov.background = White
+pov.light=[Matrix([-10,0,0]), Matrix([0,-10,0]), Matrix([0,0,-10]), Matrix([0,0,10])]
+pov.render("out.pov")
+*/

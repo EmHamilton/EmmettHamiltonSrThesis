@@ -1,0 +1,223 @@
+import meshtools
+import plot
+import optimize
+import symmetry
+import povray
+
+var a = 0.25 // Layer spacing 
+var r = 0.5 // Size of hole 
+var L = 3  // Size of box 
+var p = 0.2 // Jump 
+var eps = 1e-15 // Small number for jiggling vertices; must be << threshold for same vertices
+
+// Construct upper octant
+var vertices = [ [r,eps,a], [L,eps,a], [L,r,a], [L,L,a], [r,L,a], [0,L,a], [0,r,a], [r,r,a],
+                 [r,eps,0], [r,r,0], [0,r,0] ]
+
+var faces = [  [0,1,2,7], [2,3,4,7], [7,4,5,6], [0,8,9,7], [6,7,9,10] ]
+
+// Create the rest of the mesh by reflection
+fn reflect(mesh, axis) {
+  var rmat = Matrix([[1,0,0],[0,1,0],[0,0,1]])
+  if (isint(axis)) rmat[axis,axis]*=-1
+  if (islist(axis)) for (i in axis) rmat[i,i]*=-1
+
+  var m = mesh.clone()
+  var vert = m.vertexmatrix()
+
+  for (vid in 0...m.count()) {
+    vert.setcolumn(vid, rmat * vert.column(vid))
+  }
+
+  return m
+}
+
+var m1 = PolyhedronMesh(vertices, faces)
+m1=refinemesh(m1)
+m1.removegrade(1) 
+
+fn showaxes(x0, R) {
+  var xx0=x0
+  if (islist(xx0)) xx0=Matrix(x0)
+  var axis = Graphics()
+  axis.display(Arrow(xx0, xx0+Matrix([R,0,0]), color=Red)) 
+  axis.display(Arrow(xx0, xx0+Matrix([0,R,0]), color=Green)) 
+  axis.display(Arrow(xx0, xx0+Matrix([0,0,R]), color=Blue))
+  return axis
+}
+
+fn helicalize(mesh, alpha) {
+  fn helicoid (x) {
+    return Matrix([x[0],x[1], x[2]+alpha*arctan(x[0],x[1])])
+  }
+
+  for (id in 0...mesh.count()) {
+    mesh.setvertexposition(id, helicoid(mesh.vertexposition(id)))
+  }
+  return mesh 
+}
+
+fn sew(mesh) { 
+  for (id in 0...mesh.count()) {
+    var x = mesh.vertexposition(id)
+    if (abs(x[1])<2*eps) {
+      x[1]=0
+    }
+
+    mesh.setvertexposition(id, x)
+  }
+}
+
+// Merge reflected meshed together
+var meshes =  [ m1,
+                reflect(m1, 0),
+                reflect(m1, 1),
+                reflect(m1, 2),
+                reflect(m1, [0,1]),
+                reflect(m1, [1,2]),
+                reflect(m1, [2,0]),
+                reflect(m1, [0,1,2])
+              ]
+
+for (m in meshes) sew(helicalize(m, p))
+
+var merge = MeshMerge(meshes)
+
+var m = merge.merge()
+m.addgrade(1)
+
+Show(plotmesh(m1, grade=[0,1,2]))
+Show(plotmesh(m, grade=[0,1,2]))
+@
+
+fn selectouter(m) {
+  var cut = Selection(m, fn (x,y,z) x<0 && abs(y)<2*eps) 
+  cut.addgrade(1)
+
+  var bnd = Selection(m, boundary=true)
+  return [bnd.difference(cut), cut]
+}
+
+var select = selectouter(m)
+var outer = select[0]
+var cut = select[1] 
+
+//Show(plotselection(m, outer, grade=[0,1,2])+showaxes([L,0,0],1))
+
+var translate = Translate(Matrix([0,0,2*Pi*p])) 
+m.addsymmetry(translate, cut)
+
+/*var conn=m.connectivitymatrix(0,0)
+for (id in cut.idlistforgrade(0)) {
+  print "id ${id} : ${conn.rowindices(id)}"
+}*/
+
+equiangulate(m)
+//Show(plotmesh(m, grade=[0,1,2])+showaxes([L,0,0],1))
+
+Show(plotmesh(m, grade=[0,1,2])+showaxes([L,0,0],1))
+
+var problem = OptimizationProblem(m) 
+
+var la = Area() 
+problem.addenergy(la)
+
+var lmsq = MeanCurvatureSq() 
+problem.addenergy(lmsq, prefactor=2)
+
+var leq = EquiElement() 
+problem.addenergy(leq, prefactor=0.1)
+
+//var bnd = Selection(m, boundary=true)
+//Show(plotselection(m, bnd, grade=[0,1,2]))
+
+var lp = ScalarPotential(fn (x,y,z) y, fn (x,y,z) Matrix([0,1,0]))
+var lpc = problem.addlocalconstraint(lp, selection=cut)
+
+var opt = ShapeOptimizer(problem, m) 
+opt.fix(outer)
+
+opt.stepsize = 0.01 
+
+for (i in 1..60) {
+    opt.conjugategradient(20) 
+    equiangulate(m)
+    if (opt.hasconverged()) break 
+}
+
+//Show(plotmesh(m, grade=[0,1,2])+showaxes([L,0,0],1))
+
+// Refinement 
+var mr=MeshRefiner([m, select, outer, cut])
+var refmap = mr.refine()
+for (el in [problem, opt]) el.update(refmap)
+m = refmap[m]
+
+// Regenerate the selections
+opt.fixed=[]
+select = selectouter(m)
+outer = select[0]
+cut = select[1] 
+lpc.selection = cut 
+
+opt.fix(outer) // Refix the vertices 
+m.addsymmetry(translate, cut) // And fix the symmetry
+
+/*var conn=m.connectivitymatrix(0,0)
+for (id in cut.idlistforgrade(0)) {
+  print "id ${id} : ${conn.rowindices(id)}"
+}
+
+var imsq=lmsq.integrand(m) 
+
+var s = Selection(m) 
+for (e, i in imsq) if (isnan(e)) { print i; s[0,i]=true }
+
+Show(plotselection(m, s, grade=[0,1,2])+showaxes([L,0,0],1))*/
+
+for (i in 1..60) {
+    opt.conjugategradient(20) 
+    equiangulate(m)
+    if (opt.hasconverged()) break 
+}
+
+// Refinement 
+var mr=MeshRefiner([m, select, outer, cut])
+var refmap = mr.refine()
+for (el in [problem, opt]) el.update(refmap)
+m = refmap[m]
+
+// Regenerate the selections
+opt.fixed=[]
+select = selectouter(m)
+outer = select[0]
+cut = select[1] 
+lpc.selection = cut 
+
+opt.fix(outer) // Refix the vertices 
+m.addsymmetry(translate, cut) // And fix the symmetry
+
+for (i in 1..60) {
+    opt.conjugategradient(20) 
+    equiangulate(m)
+    if (opt.hasconverged()) break 
+    print i
+}
+
+print m 
+
+Show(plotmesh(m, grade=[0,2])+showaxes([L,0,0],1))
+
+//var gdisp = plotmesh(m, grade=[0,1,2])
+//Show(gdisp)
+
+/*
+gdisp.background = White
+var pov = POVRaytracer(gdisp)
+pov.viewpoint = 10*Matrix([1,1,0.2])
+pov.viewangle = 30
+pov.vertical = Matrix([0,0,1])
+pov.background = White
+pov.light=[Matrix([-10,0,0]), Matrix([0,-10,0]), Matrix([0,0,-10]), Matrix([0,0,10])]
+pov.render("out.pov")
+*/
