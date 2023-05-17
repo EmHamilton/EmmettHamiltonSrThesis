@@ -1,4 +1,4 @@
-# Emmett Hamilton's Senior Thesis
+# Modeling Equilibrium Configurations of Lipid Membranes Under Large Deformations
 Code Used in Emmett Hamilton's Senior Thesis done at the Tufts University Department of Physics and Astronomy.
 
 
